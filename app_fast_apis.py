@@ -7,43 +7,29 @@ from pymongo.errors import DuplicateKeyError
 from typing import List
 import asyncio
 import requests
+import uvicorn
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from metrics_utility import *
-from metrics_db import *
+#from metrics_db import fast_api_app
+from old_db import collection_saw_machines, collection_axes, collection_bar_graph, user_collection,SawMachineStatus, DataPoint, BarGraphData, User
 fast_api_app = None
 
-def start_app_server():
-    log_debug("Entered proxy server")
-    fast_api_app= FastAPI()
+fast_api_app = FastAPI()
 
-    origins = ["*"]
-    fast_api_app.add_middleware(
-              CORSMiddleware,
-                allow_origins=origins,
-                allow_credentials=True,
-                allow_methods=["*"],
-                allow_headers=["*"],
-            )
-    
+origins = ["*"]
+fast_api_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    )
+        
 # Define models for data
-class SawMachineStatus(BaseModel):
-    machine_id: int
-    status: str
-    value: int
-
-class DataPoint(BaseModel):
-    timestamp: str
-    content: str
-
-class BarGraphData(BaseModel):
-    machineId: int
-    jobpending: int
-    jobfinished: int
-
-@fast_api_app.post("/api/signup", response_model=Token)
+@fast_api_app.post("/api/signup")
 async def signup(user: User):
     try:
         be_debug_enable()
@@ -52,36 +38,29 @@ async def signup(user: User):
 
         # Insert the new user into the database with the hashed password
         user_dict = user.dict()
-        user_dict["_id"] = user.email  # Use email as the document ID
-        user_dict["password"] = hashed_password.decode("utf-8")  # Store the hashed password as a string
+        user_dict["_id"] = user.email 
+        user_dict["password"] = hashed_password.decode("utf-8")  
 
-        # await user_collection.insert_one(user_dict)
-
-        # Generate and return a JWT token upon successful registration
-        # access_token = create_access_token(data={"sub": user.email})
-        # return access_token
+        await user_collection.insert_one(user_dict)
+        return {"message": "Signup successful"}
+       
     except DuplicateKeyError:
         raise HTTPException(status_code=400, detail="User already exists")
 
-@fast_api_app.post("/api/login", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user_email = form_data.username
-    user_password = form_data.password
-
+@fast_api_app.post("/api/login")
+async def login(user:User):
     # Retrieve the user data from the database
-    user_data = await user_collection.find_one({"_id": user_email})
+    user_data = await user_collection.find_one({"_id": user.email})
     be_debug_enable()
     print("entered login")
 
     if user_data:
         # Verify the provided password against the stored hashed password
         stored_password = user_data.get("password")
+        if stored_password and bcrypt.checkpw(user.password.encode("utf-8"), stored_password.encode("utf-8")):
+            return {"message": "Login successful"}
 
-        if stored_password and bcrypt.checkpw(user_password.encode("utf-8"), stored_password.encode("utf-8")):
-            access_token = create_access_token(data={"sub":user_email})
-            return access_token
-
-    raise HTTPException(status_code=401, detail="Login failed")
+        raise HTTPException(status_code=401, detail="Login failed")
 
 @fast_api_app.get("/api/saw-machines", response_model=List[SawMachineStatus])
 async def get_saw_machines():
@@ -95,23 +74,22 @@ async def get_saw_machines():
 
     return saw_machine_data
 
- 
+    
 # Define an endpoint to retrieve data and return it using the schema
-@fast_api_app.get("/line_graph_data/{name}", response_model=list[DataPoint])
-async def get_line_graph_data(name: str):
-    cursor = collection_axes.find({"name": name})
-    results = await cursor.to_list(length=None)
-   
-    # Extract relevant data for the line graph
-    data = [DataPoint(timestamp=entry["timestamp"], content=entry["content"]) for entry in results]
-    #print(data)
-    return data
+@fast_api_app.get("/api/line-graph-data", response_model=List[DataPoint])
+async def get_line_graph_data():
+    be_debug_enable()
+
+    # Retrieve data from MongoDB collection for axes and sort by timestamp
+    async with collection_axes.find({}).sort("timestamp", 1) as cursor:
+        data_points_axes = [DataPoint(**data) async for data in cursor]
+    return data_points_axes
 
 # Retrieve bar graph data
 @fast_api_app.get("/api/bar-graph-data", response_model=List[BarGraphData])
 async def get_bar_graph_data():
     be_debug_enable()
-    #print("Entered bar data")
+    print("Entered bar data")
 
     async with collection_bar_graph.find({}) as cursor:
         bar_graph_data = []
@@ -124,7 +102,6 @@ async def get_bar_graph_data():
             ))
 
     return bar_graph_data
-
 @fast_api_app.websocket("/status")
 async def get_status(websocket: WebSocket):
     await websocket.accept()
@@ -133,7 +110,14 @@ async def get_status(websocket: WebSocket):
            await websocket.send_text("Start")
            await asyncio.sleep(1)
     except WebSocketDisconnect:
-        print("Client Disconnected")
+           print("Client Disconnected")
     except Exception as e:
-        print(f"WebSocket Error: {str(e)}")
-        await websocket.close()
+           print(f"WebSocket Error: {str(e)}")
+           await websocket.close()
+
+
+def start_app_server():
+    log_debug("Fast API Server Statrted")
+    uvicorn.run(fast_api_app)
+
+    

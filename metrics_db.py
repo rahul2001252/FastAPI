@@ -74,7 +74,7 @@ class MongoDb (MonitorDb):
         
     def __init__(self, db_type):
         MonitorDb.db_type = db_type
-        super.__init__()
+        super().__init__(db_type)
         self.init_mongo_db()
         
 
@@ -96,7 +96,9 @@ class BarGraphData(BaseModel):
 
 def init_database(db_type):
     if db_type == "mongodb":
-        db = MongoDb()
+        db = MongoDb(db_type)
+        return db
     else:
         print("Database type {} not supported.format(db_type)")
     
+db=init_database("mongodb")
